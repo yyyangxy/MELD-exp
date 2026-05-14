@@ -1,0 +1,54 @@
+seed: 13
+
+data:
+  data_root_mode: auto
+  server_data_root: /data2/yangxy/dataset/MELD/MELD.Raw
+  local_data_root: ../MELD-master/data/MELD
+  eval_split: test
+  warn_missing_videos: true
+
+tasks:
+  order: [emotion]
+
+modalities:
+  order: [text, audio, visual]
+  stage_order: [text, text_audio, full]
+  stages:
+    text: [text]
+    text_audio: [text, audio]
+    full: [text, audio, visual]
+  feature_root: outputs
+  feature_dims:
+    text: 256
+    audio: 768
+    visual: 2048
+
+model:
+  modality_projection_dim: 128
+  speaker_embedding: true
+  speaker_embedding_dim: 32
+  fusion_hidden_dim: 256
+  fusion_output_dim: 256
+  dropout: 0.2
+  context_window: 3
+  use_context: true
+  max_length: 96
+
+train:
+  output_dir: outputs
+  device: auto
+  batch_size: 64
+  epochs: 5
+  lr: 0.001
+  weight_decay: 0.0
+  grad_clip: 5.0
+  num_workers: 0
+
+continual:
+  seed: 13
+  lambda_replay: 1.0
+  lambda_kd: 0.5
+  lambda_cmd: 0.5
+  temperature: 2.0
+  memory_per_class: 20
+  modality_dropout: 0.15

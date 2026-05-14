@@ -1,0 +1,41 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment files
+.env
+.env.*
+
+# Experiment outputs and generated artifacts
+outputs/
+outputs/features/
+outputs/checkpoints/
+outputs/logs/
+outputs/tmp/
+outputs/cache/
+*.ckpt
+*.pt
+*.pth
+*.bin
+
+# Large generated arrays and media
+*.npy
+*.npz
+*.mp4
+*.wav
+*.flac
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
