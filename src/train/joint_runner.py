@@ -17,8 +17,11 @@ from src.utils.paths import ensure_dir, load_config, resolve_data_root
 from src.utils.seed import seed_everything
 
 
-def run_joint_experiment(config_path: str | Path) -> Path:
+def run_joint_experiment(config_path: str | Path, run_name: str | None = None) -> Path:
     config = load_config(config_path)
+    if run_name:
+        config.setdefault("run", {})["name"] = run_name
+        config.setdefault("run", {})["enabled"] = True
     output_dir = _output_dir(config)
     setup_logging(output_dir / "logs" / "joint.log")
     seed_everything(int(config.get("seed", 13)))

@@ -9,6 +9,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.utils.conda_env import ensure_conda_env
+
+ensure_conda_env()
+
 from src.data.meld_csv import read_all_splits
 from src.data.task_builder import build_task_examples
 from src.utils.paths import load_config, resolve_data_root
@@ -46,4 +50,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

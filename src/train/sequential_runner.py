@@ -17,7 +17,7 @@ from src.train.evaluator import evaluate
 from src.train.metrics import decorate_final_metrics
 from src.train.trainer import build_loader, train_one_task
 from src.utils.logging import setup_logging
-from src.utils.paths import PROJECT_ROOT, ensure_dir, load_config, resolve_data_root, resolve_path
+from src.utils.paths import PROJECT_ROOT, ensure_dir, load_config, resolve_data_root, resolve_experiment_output_dir
 from src.utils.seed import seed_everything
 
 
@@ -25,11 +25,14 @@ LOGGER = logging.getLogger(__name__)
 SEQUENTIAL_METHODS = {"seq_ft", "lwf", "random_replay", "prototype_replay", "proto_replay_kd"}
 
 
-def run_sequential_experiment(config_path: str | Path, method: str) -> Path:
+def run_sequential_experiment(config_path: str | Path, method: str, run_name: str | None = None) -> Path:
     if method not in SEQUENTIAL_METHODS:
         raise ValueError(f"Unknown sequential method '{method}'. Expected {sorted(SEQUENTIAL_METHODS)}")
 
     config = load_config(config_path)
+    if run_name:
+        config.setdefault("run", {})["name"] = run_name
+        config.setdefault("run", {})["enabled"] = True
     output_dir = _output_dir(config)
     setup_logging(output_dir / "logs" / f"{method}.log")
     seed_everything(int(config.get("seed", 13)))
@@ -71,6 +74,7 @@ def run_sequential_experiment(config_path: str | Path, method: str) -> Path:
     max_length = int(model_cfg.get("max_length", 96))
     num_workers = int(train_cfg.get("num_workers", 0))
     use_context = bool(model_cfg.get("use_context", True))
+    sampler = str(continual_cfg.get("sampler", train_cfg.get("sampler", "")) or "")
 
     teacher = None
     learned_tasks: list[str] = []
@@ -87,6 +91,7 @@ def run_sequential_experiment(config_path: str | Path, method: str) -> Path:
             shuffle=True,
             num_workers=num_workers,
             use_context=use_context,
+            sampler=sampler,
         )
         replay_loaders = _build_replay_loaders(
             memory,
@@ -97,6 +102,7 @@ def run_sequential_experiment(config_path: str | Path, method: str) -> Path:
             max_length=max_length,
             num_workers=num_workers,
             use_context=use_context,
+            sampler=sampler,
         )
 
         stats = train_one_task(
@@ -111,7 +117,6 @@ def run_sequential_experiment(config_path: str | Path, method: str) -> Path:
             old_task_names=list(learned_tasks),
             teacher=teacher,
             replay_loaders=replay_loaders,
-            lambda_replay=float(continual_cfg.get("lambda_replay", 1.0)),
             lambda_kd=float(continual_cfg.get("lambda_kd", 0.5)),
             temperature=float(continual_cfg.get("temperature", 2.0)),
         )
@@ -175,6 +180,7 @@ def _build_replay_loaders(
     max_length: int,
     num_workers: int,
     use_context: bool,
+    sampler: str = "",
 ) -> dict[str, torch.utils.data.DataLoader]:
     if memory is None:
         return {}
@@ -191,6 +197,7 @@ def _build_replay_loaders(
                 shuffle=True,
                 num_workers=num_workers,
                 use_context=use_context,
+                sampler=sampler,
             )
     return loaders
 
@@ -307,6 +314,4 @@ def _resolve_device(device_name: str) -> torch.device:
 
 
 def _output_dir(config: dict) -> Path:
-    train_cfg = config.get("train", {})
-    output_dir = train_cfg.get("output_dir", "outputs")
-    return resolve_path(output_dir, PROJECT_ROOT)
+    return resolve_experiment_output_dir(config)

@@ -5,3 +5,5 @@ transformers>=4.36
 av>=10.0
 numpy>=1.24
 PyYAML>=6.0
+opensmile>=2.5
+scikit-learn>=1.3

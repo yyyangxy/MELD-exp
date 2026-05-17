@@ -3,8 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def feature_cache_root(output_root: str | Path) -> Path:
+    root = Path(output_root)
+    if root.name.startswith("features"):
+        return root
+    return root / "features"
+
+
 def feature_path(output_root: str | Path, split: str, modality: str, utterance_key: str) -> Path:
-    return Path(output_root) / "features" / split / modality / f"{utterance_key}.npy"
+    return feature_cache_root(output_root) / split / modality / f"{utterance_key}.npy"
 
 
 def save_feature(output_root: str | Path, split: str, modality: str, utterance_key: str, values) -> Path:
@@ -25,4 +32,3 @@ def load_feature(path: str | Path):
     except ModuleNotFoundError as exc:
         raise RuntimeError("numpy is required to read .npy feature caches") from exc
     return np.load(Path(path))
-

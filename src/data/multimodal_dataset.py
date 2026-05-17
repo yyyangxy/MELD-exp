@@ -13,13 +13,20 @@ from .task_builder import TaskExample
 DEFAULT_MODALITIES = ["text", "audio", "visual"]
 
 
+def feature_cache_root(feature_root: str | Path) -> Path:
+    root = Path(feature_root)
+    if root.name.startswith("features"):
+        return root
+    return root / "features"
+
+
 def feature_path_for(
     feature_root: str | Path,
     split: str,
     modality: str,
     utterance_key: str,
 ) -> Path:
-    return Path(feature_root) / "features" / split / modality / f"{utterance_key}.npy"
+    return feature_cache_root(feature_root) / split / modality / f"{utterance_key}.npy"
 
 
 def summarize_feature_coverage(
@@ -147,4 +154,3 @@ def _load_feature(path: Path, expected_dim: int) -> torch.Tensor:
             f"Feature dimension mismatch for {path}: expected {expected_dim}, got {array.shape[0]}"
         )
     return torch.from_numpy(array)
-

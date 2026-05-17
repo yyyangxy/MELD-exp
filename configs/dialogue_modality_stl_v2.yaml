@@ -1,5 +1,11 @@
 seed: 13
 
+run:
+  enabled: true
+  group: dialogue_modality_stl_v2
+  name: bilstm_ln_kd1.0_cmd1.0_mem100
+  reuse_existing: true
+
 data:
   data_root_mode: auto
   server_data_root: /data2/yangxy/dataset/MELD/MELD.Raw
@@ -17,28 +23,29 @@ modalities:
     text: [text]
     text_audio: [text, audio]
     full: [text, audio, visual]
-  feature_root: outputs
+  feature_root: outputs/features_v2
   feature_dims:
-    text: 256
-    audio: 768
+    text: 1024
+    audio: 6373
     visual: 2048
 
 model:
-  modality_projection_dim: 128
+  modality_projection_dim: 256
+  normalize_modality_inputs: true
   modality_activation_negative_slope: 0.01
   speaker_embedding: true
   speaker_embedding_dim: 32
   fusion_hidden_dim: 256
   fusion_output_dim: 256
-  dropout: 0.2
-  context_window: 3
-  use_context: true
-  max_length: 96
+  dialogue_encoder: true
+  dialogue_hidden_dim: 256
+  dialogue_num_layers: 2
+  dropout: 0.3
 
 train:
   output_dir: outputs
   device: auto
-  batch_size: 64
+  batch_size: 16
   epochs: 5
   lr: 0.001
   weight_decay: 0.0
@@ -48,8 +55,14 @@ train:
 continual:
   seed: 13
   sampler: weighted_random
-  lambda_kd: 0.5
-  lambda_cmd: 0.5
+  lambda_kd: 1.0
+  lambda_cmd: 1.0
+  lambda_rel: 1.0
   temperature: 2.0
-  memory_per_class: 20
-  modality_dropout: 0.15
+  memory_per_class: 100
+
+feature_paths:
+  feature_set: final_v2
+  feature_root: outputs/features_v2
+  text_model_path: /data2/yangxy/models/xlm-roberta-large
+  visual_model_path: torchvision:resnet50

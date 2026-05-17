@@ -1,5 +1,11 @@
 seed: 13
 
+run:
+  enabled: true
+  group: main_stl_v2
+  name: feature_full_ln_kd1.0_mem100
+  reuse_existing: true
+
 data:
   data_root_mode: auto
   server_data_root: /data2/yangxy/dataset/MELD/MELD.Raw
@@ -8,29 +14,26 @@ data:
   warn_missing_videos: true
 
 tasks:
-  order: [emotion]
+  order: [sentiment, emotion, shift]
 
 modalities:
   order: [text, audio, visual]
-  stage_order: [text, text_audio, full]
-  stages:
-    text: [text]
-    text_audio: [text, audio]
-    full: [text, audio, visual]
-  feature_root: outputs
+  active_modalities: [text, audio, visual]
+  feature_root: outputs/features_v2
   feature_dims:
-    text: 256
-    audio: 768
+    text: 1024
+    audio: 6373
     visual: 2048
 
 model:
-  modality_projection_dim: 128
+  modality_projection_dim: 256
+  normalize_modality_inputs: true
   modality_activation_negative_slope: 0.01
   speaker_embedding: true
   speaker_embedding_dim: 32
   fusion_hidden_dim: 256
   fusion_output_dim: 256
-  dropout: 0.2
+  dropout: 0.3
   context_window: 3
   use_context: true
   max_length: 96
@@ -48,8 +51,16 @@ train:
 continual:
   seed: 13
   sampler: weighted_random
-  lambda_kd: 0.5
-  lambda_cmd: 0.5
+  lambda_kd: 1.0
+  lambda_rel: 1.0
   temperature: 2.0
-  memory_per_class: 20
-  modality_dropout: 0.15
+  memory_per_class: 100
+  memory_strategy: hybrid
+  representative_ratio: 0.5
+  kmeans_iters: 10
+
+feature_paths:
+  feature_set: final_v2
+  feature_root: outputs/features_v2
+  text_model_path: /data2/yangxy/models/xlm-roberta-large
+  visual_model_path: torchvision:resnet50

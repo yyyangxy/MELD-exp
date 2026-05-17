@@ -38,8 +38,7 @@ train:
 
 continual:
   seed: 13
-  lambda_replay: 1.0
+  sampler: weighted_random
   lambda_kd: 0.5
   temperature: 2.0
   memory_per_class: 20
-

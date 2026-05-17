@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from src.continual.distillation import kd_loss
 from src.data.collate import collate_batch
@@ -30,6 +30,7 @@ def build_loader(
     shuffle: bool,
     num_workers: int = 0,
     use_context: bool = True,
+    sampler: str | None = None,
 ) -> DataLoader:
     dataset = MeldTextDataset(
         examples,
@@ -38,10 +39,12 @@ def build_loader(
         max_length=max_length,
         use_context=use_context,
     )
+    weighted_sampler = _build_weighted_sampler(examples) if shuffle and sampler == "weighted_random" else None
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if weighted_sampler is None else False,
+        sampler=weighted_sampler,
         num_workers=num_workers,
         collate_fn=collate_batch,
     )
@@ -59,7 +62,6 @@ def train_one_task(
     old_task_names: list[str],
     teacher: nn.Module | None,
     replay_loaders: dict[str, DataLoader] | None,
-    lambda_replay: float,
     lambda_kd: float,
     temperature: float,
 ) -> TrainStats:
@@ -76,17 +78,15 @@ def train_one_task(
             optimizer.zero_grad(set_to_none=True)
 
             output = model(batch, task_name=task_name)
-            loss = criterion(output["logits"], batch["label"])
+            current_ce = criterion(output["logits"], batch["label"])
 
+            kd_terms = []
             if method == "lwf" and teacher is not None and old_task_names:
-                kd_terms = []
                 for old_task in old_task_names:
                     with torch.no_grad():
                         teacher_logits = teacher(batch, task_name=old_task)["logits"]
                     student_logits = model(batch, task_name=old_task)["logits"]
                     kd_terms.append(kd_loss(student_logits, teacher_logits, temperature))
-                if kd_terms:
-                    loss = loss + lambda_kd * torch.stack(kd_terms).mean()
 
             replay_terms = []
             replay_kd_terms = []
@@ -100,8 +100,12 @@ def train_one_task(
                         teacher_logits = teacher(replay_batch, task_name=replay_task)["logits"]
                     replay_kd_terms.append(kd_loss(replay_output["logits"], teacher_logits, temperature))
 
+            supervised_terms = [current_ce]
             if replay_terms:
-                loss = loss + lambda_replay * torch.stack(replay_terms).mean()
+                supervised_terms.extend(replay_terms)
+            loss = torch.stack(supervised_terms).mean()
+            if kd_terms:
+                loss = loss + lambda_kd * torch.stack(kd_terms).mean()
             if replay_kd_terms:
                 loss = loss + lambda_kd * torch.stack(replay_kd_terms).mean()
 
@@ -161,3 +165,13 @@ def train_joint(
 def _infinite(loader: DataLoader):
     while True:
         yield from loader
+
+
+def _build_weighted_sampler(examples: list[TaskExample]) -> WeightedRandomSampler | None:
+    if not examples:
+        return None
+    labels = [example.label for example in examples]
+    counts = torch.bincount(torch.tensor(labels, dtype=torch.long)).float()
+    counts[counts == 0] = 1.0
+    weights = torch.tensor([1.0 / counts[label].item() for label in labels], dtype=torch.double)
+    return WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)

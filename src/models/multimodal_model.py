@@ -25,12 +25,19 @@ class MultimodalSTLModel(nn.Module):
         self.modality_to_index = {modality: idx for idx, modality in enumerate(self.modalities)}
         projection_dim = int(model_cfg.get("modality_projection_dim", 128))
         dropout = float(model_cfg.get("dropout", 0.2))
+        negative_slope = float(model_cfg.get("modality_activation_negative_slope", 0.01))
+        normalize_inputs = bool(model_cfg.get("normalize_modality_inputs", True))
 
         self.modality_encoders = nn.ModuleDict(
             {
                 modality: nn.Sequential(
+                    *(
+                        [nn.LayerNorm(int(feature_dims[modality]))]
+                        if normalize_inputs
+                        else []
+                    ),
                     nn.Linear(int(feature_dims[modality]), projection_dim),
-                    nn.ReLU(),
+                    nn.LeakyReLU(negative_slope=negative_slope),
                     nn.Dropout(dropout),
                 )
                 for modality in self.modalities
@@ -92,4 +99,3 @@ class MultimodalSTLModel(nn.Module):
             "embedding": embedding,
             "modality_embeddings": modality_embeddings,
         }
-

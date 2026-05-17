@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,35 @@ def ensure_dir(path: str | Path) -> Path:
     return resolved
 
 
+def resolve_experiment_output_dir(config: dict[str, Any]) -> Path:
+    train_cfg = config.get("train", {})
+    output_root = resolve_path(train_cfg.get("output_dir", "outputs"), PROJECT_ROOT)
+    run_cfg = config.get("run", {})
+    if not bool(run_cfg.get("enabled", False)):
+        return output_root
+
+    group = _safe_path_component(str(run_cfg.get("group", "default")))
+    name = _safe_path_component(str(run_cfg.get("name", "run")))
+    runs_root = ensure_dir(output_root / "runs" / group)
+
+    explicit_dir = run_cfg.get("dir")
+    if explicit_dir:
+        run_dir = resolve_path(explicit_dir, PROJECT_ROOT)
+    else:
+        run_id = run_cfg.get("id")
+        if run_id:
+            run_dir = runs_root / _safe_path_component(str(run_id))
+        elif bool(run_cfg.get("reuse_existing", True)):
+            matches = sorted(runs_root.glob(f"*_{name}"))
+            run_dir = matches[-1] if matches else runs_root / f"{_timestamp()}_{name}"
+        else:
+            run_dir = runs_root / f"{_timestamp()}_{name}"
+
+    ensure_dir(run_dir)
+    _write_run_metadata(run_dir, config)
+    return run_dir
+
+
 def load_config(config_path: str | Path) -> dict[str, Any]:
     path = Path(config_path).expanduser().resolve()
     text = path.read_text(encoding="utf-8")
@@ -38,6 +69,49 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
     data["_config_path"] = str(path)
     data["_config_dir"] = str(path.parent)
     return data
+
+
+def _write_run_metadata(run_dir: Path, config: dict[str, Any]) -> None:
+    config_path = run_dir / "config.yaml"
+    latest_config_path = run_dir / "config_latest.yaml"
+    public_config = {
+        key: value
+        for key, value in config.items()
+        if not key.startswith("_")
+    }
+    rendered_config = _render_config(public_config)
+    if not config_path.exists():
+        config_path.write_text(rendered_config, encoding="utf-8")
+    latest_config_path.write_text(rendered_config, encoding="utf-8")
+
+    notes_path = run_dir / "notes.md"
+    if not notes_path.exists():
+        notes_path.write_text(
+            "# Experiment Notes\n\n"
+            "## Purpose\n\n"
+            "- \n\n"
+            "## Observations\n\n"
+            "- \n",
+            encoding="utf-8",
+        )
+
+
+def _safe_path_component(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._=-]+", "_", value.strip())
+    return cleaned.strip("_") or "run"
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _render_config(config: dict[str, Any]) -> str:
+    try:
+        import yaml  # type: ignore
+
+        return yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
+    except ModuleNotFoundError:
+        return repr(config)
 
 
 def _parse_minimal_yaml(text: str) -> dict[str, Any]:
