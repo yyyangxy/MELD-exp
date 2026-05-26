@@ -48,29 +48,36 @@ def decorate_final_metrics(rows: list[dict[str, object]], task_order: list[str])
     if not rows:
         return rows
     final_stage = rows[-1]["stage"]
-    best_by_task: dict[str, float] = {}
-    final_by_task: dict[str, float] = {}
+    best_weighted_f1_by_task: dict[str, float] = {}
+    final_weighted_f1_by_task: dict[str, float] = {}
+    final_accuracy_by_task: dict[str, float] = {}
     for row in rows:
         task = str(row["task"])
-        score = float(row["weighted_f1"])
-        best_by_task[task] = max(best_by_task.get(task, 0.0), score)
+        weighted_f1 = float(row["weighted_f1"])
+        best_weighted_f1_by_task[task] = max(best_weighted_f1_by_task.get(task, 0.0), weighted_f1)
         if row["stage"] == final_stage:
-            final_by_task[task] = score
+            final_weighted_f1_by_task[task] = weighted_f1
+            final_accuracy_by_task[task] = float(row["accuracy"])
 
-    final_scores = [final_by_task[task] for task in task_order if task in final_by_task]
-    final_avg = sum(final_scores) / len(final_scores) if final_scores else 0.0
+    final_weighted_f1_scores = [final_weighted_f1_by_task[task] for task in task_order if task in final_weighted_f1_by_task]
+    final_accuracy_scores = [final_accuracy_by_task[task] for task in task_order if task in final_accuracy_by_task]
+    final_avg_weighted_f1 = sum(final_weighted_f1_scores) / len(final_weighted_f1_scores) if final_weighted_f1_scores else 0.0
+    final_avg_accuracy = sum(final_accuracy_scores) / len(final_accuracy_scores) if final_accuracy_scores else 0.0
 
     for row in rows:
         task = str(row["task"])
-        if row["stage"] == final_stage and task in final_by_task:
-            best = best_by_task.get(task, 0.0)
-            final = final_by_task[task]
-            row["final_avg"] = final_avg
+        if row["stage"] == final_stage and task in final_weighted_f1_by_task:
+            best = best_weighted_f1_by_task.get(task, 0.0)
+            final = final_weighted_f1_by_task[task]
+            row["final_avg"] = final_avg_weighted_f1
+            row["final_avg_weighted_f1"] = final_avg_weighted_f1
+            row["final_avg_accuracy"] = final_avg_accuracy
             row["forgetting"] = max(0.0, best - final)
             row["retention"] = final / best if best > 0 else 0.0
         else:
             row["final_avg"] = ""
+            row["final_avg_weighted_f1"] = ""
+            row["final_avg_accuracy"] = ""
             row["forgetting"] = ""
             row["retention"] = ""
     return rows
-

@@ -39,6 +39,18 @@ TASK_LABELS = {
     "shift": SHIFT_LABELS,
 }
 
+_MOJIBAKE_TRANSLATION = str.maketrans(
+    {
+        "\x91": "'",
+        "\x92": "'",
+        "\x93": '"',
+        "\x94": '"',
+        "\x96": "-",
+        "\x97": "-",
+        "\x85": "...",
+    }
+)
+
 
 @dataclass(frozen=True)
 class UtteranceRecord:
@@ -65,6 +77,10 @@ def utterance_key(dialogue_id: int, utterance_id: int) -> str:
 
 def video_path_for(data_root: Path, split: str, dialogue_id: int, utterance_id: int) -> Path:
     return data_root / SPLIT_TO_VIDEO_DIR[split] / f"{utterance_key(dialogue_id, utterance_id)}.mp4"
+
+
+def normalize_meld_text(text: str) -> str:
+    return text.translate(_MOJIBAKE_TRANSLATION).strip()
 
 
 def read_split_csv(
@@ -96,7 +112,7 @@ def read_split_csv(
                 UtteranceRecord(
                     split=split,
                     sr_no=int(row["Sr No."]),
-                    utterance=row["Utterance"].strip(),
+                    utterance=normalize_meld_text(row["Utterance"]),
                     speaker=row["Speaker"].strip(),
                     emotion=row["Emotion"].strip().lower(),
                     sentiment=row["Sentiment"].strip().lower(),
@@ -131,4 +147,3 @@ def read_all_splits(
         split: read_split_csv(data_root, split, warn_missing_videos=warn_missing_videos)
         for split in splits
     }
-

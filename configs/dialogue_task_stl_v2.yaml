@@ -10,6 +10,7 @@ data:
   data_root_mode: auto
   server_data_root: /data2/yangxy/dataset/MELD/MELD.Raw
   local_data_root: ../MELD-master/data/MELD
+  stl_task_split_root: stl_task_splits
   eval_split: test
   warn_missing_videos: true
 
@@ -37,15 +38,19 @@ model:
   dialogue_hidden_dim: 256
   dialogue_num_layers: 2
   dropout: 0.3
+  max_length: 128
 
 train:
   output_dir: outputs
   device: auto
-  batch_size: 16
-  epochs: 5
-  lr: 0.001
-  weight_decay: 0.0
-  grad_clip: 5.0
+  batch_size: 1
+  epochs: 30
+  eval_interval: 10
+  lr: 0.00002
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accum_steps: 8
+  fp16: true
   num_workers: 0
 
 continual:

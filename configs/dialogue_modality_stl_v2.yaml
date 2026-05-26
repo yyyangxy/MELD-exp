@@ -46,7 +46,8 @@ train:
   output_dir: outputs
   device: auto
   batch_size: 16
-  epochs: 5
+  epochs: 100
+  eval_interval: 10
   lr: 0.001
   weight_decay: 0.0
   grad_clip: 5.0

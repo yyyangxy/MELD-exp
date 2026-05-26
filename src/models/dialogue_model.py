@@ -93,8 +93,10 @@ class DialogueMultimodalSTLModel(nn.Module):
         batch: dict,
         task_name: str | None = None,
         active_modalities: list[str] | None = None,
+        head_name: str | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         task_name = task_name or batch.get("task_name", "emotion")
+        head_name = head_name or task_name
         active_set = set(active_modalities or batch.get("active_modalities", self.modalities))
         modality_mask = batch.get("modality_mask")
         fused_inputs: list[torch.Tensor] = []
@@ -137,7 +139,7 @@ class DialogueMultimodalSTLModel(nn.Module):
                 total_length=max_len,
             )
 
-        logits = self.heads[task_name](sequence_embedding)
+        logits = self.heads[head_name](sequence_embedding)
         return {
             "logits": logits,
             "embedding": sequence_embedding,

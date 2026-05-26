@@ -23,6 +23,7 @@ DEFAULT_METHODS = [
     "prototype_replay",
     "proto_replay_kd",
     "utt_task_sa_cmd",
+    "utt_task_pg_trd",
 ]
 
 

@@ -165,6 +165,27 @@ def run_modality_experiment(config_path: str | Path, method: str, run_name: str 
             lambda_cmd=float(continual_cfg.get("lambda_cmd", 0.5)),
             lambda_rel=float(continual_cfg.get("lambda_rel", continual_cfg.get("lambda_cmd", 1.0))),
             temperature=float(continual_cfg.get("temperature", 2.0)),
+            eval_interval=int(train_cfg.get("eval_interval", 0)),
+            eval_callback=lambda epoch, stage_name=stage_name: rows.extend(
+                _with_stage_label(
+                    _evaluate_stage(
+                        model,
+                        examples_by_split[eval_split],
+                        [*learned_stages, stage_name],
+                        stages,
+                        feature_root,
+                        feature_dims,
+                        speaker_to_id,
+                        all_modalities,
+                        batch_size,
+                        int(train_cfg.get("num_workers", 0)),
+                        device,
+                        method,
+                        current_stage=stage_name,
+                    ),
+                    f"{stage_name}_ep{epoch}",
+                )
+            ),
         )
         LOGGER.info("Finished modality stage %s active=%s loss=%.4f", stage_name, active_modalities, loss)
 
@@ -227,13 +248,17 @@ def _train_stage(
     lambda_cmd: float,
     lambda_rel: float,
     temperature: float,
+    eval_interval: int = 0,
+    eval_callback=None,
 ) -> float:
     criterion = nn.CrossEntropyLoss()
     replay_iters = {name: _infinite(loader) for name, loader in replay_loaders.items()}
     total_loss = 0.0
     steps = 0
 
-    for _ in range(epochs):
+    for epoch_index in range(1, epochs + 1):
+        epoch_total_loss = 0.0
+        epoch_steps = 0
         model.train()
         for batch in loader:
             batch = _move_batch(batch, device)
@@ -334,8 +359,21 @@ def _train_stage(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
 
-            total_loss += float(loss.detach().cpu())
+            loss_float = float(loss.detach().cpu())
+            total_loss += loss_float
+            epoch_total_loss += loss_float
+            epoch_steps += 1
             steps += 1
+        LOGGER.info(
+            "Epoch %d/%d stage=%s method=%s total_loss=%.4f",
+            epoch_index,
+            epochs,
+            stage_name,
+            method,
+            epoch_total_loss / max(epoch_steps, 1),
+        )
+        if eval_interval > 0 and eval_callback is not None and epoch_index % eval_interval == 0:
+            eval_callback(epoch_index)
 
     return total_loss / max(steps, 1)
 
@@ -545,6 +583,12 @@ def _append_rows(path: Path, rows: list[dict[str, object]]) -> None:
         if write_header:
             writer.writeheader()
         writer.writerows(rows)
+
+
+def _with_stage_label(rows: list[dict[str, object]], stage_label: str) -> list[dict[str, object]]:
+    for row in rows:
+        row["stage"] = stage_label
+    return rows
 
 
 def _save_checkpoint(model: nn.Module, output_dir: Path, method: str, stage_name: str) -> None:

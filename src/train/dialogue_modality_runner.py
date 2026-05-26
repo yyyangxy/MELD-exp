@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import csv
+import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch import nn
@@ -29,19 +31,34 @@ from src.utils.seed import seed_everything
 
 
 LOGGER = logging.getLogger(__name__)
-DIALOGUE_MODALITY_METHODS = {"dlg_mod_seq_ft", "dlg_mod_seq_kd", "dlg_ours", "dlg_modality_sa_cmd"}
+DIALOGUE_MODALITY_METHODS = {
+    "dlg_mod_seq_ft",
+    "dlg_mod_seq_kd",
+    "dlg_ours",
+    "dlg_modality_sa_cmd",
+    "dlg_modality_sa_cmd_view_heads",
+    "dlg_modality_sa_cmd_view_heads_freeze",
+}
 
 
-def run_dialogue_modality_experiment(config_path: str | Path, method: str, run_name: str | None = None) -> Path:
+def run_dialogue_modality_experiment(
+    config_path: str | Path,
+    method: str,
+    run_name: str | None = None,
+    train_overrides: dict[str, Any] | None = None,
+) -> Path:
     if method not in DIALOGUE_MODALITY_METHODS:
         raise ValueError(f"Unknown dialogue modality method '{method}'. Expected {sorted(DIALOGUE_MODALITY_METHODS)}")
 
     config = load_config(config_path)
+    if train_overrides:
+        apply_train_overrides(config, train_overrides)
     if run_name:
         config.setdefault("run", {})["name"] = run_name
         config.setdefault("run", {})["enabled"] = True
     output_dir = resolve_experiment_output_dir(config)
     setup_logging(output_dir / "logs" / f"{method}.log")
+    _write_run_parameters(output_dir, config, method, train_overrides or {})
     seed_everything(int(config.get("seed", 13)))
 
     data_cfg = config.get("data", {})
@@ -63,11 +80,14 @@ def run_dialogue_modality_experiment(config_path: str | Path, method: str, run_n
     speaker_to_id = build_speaker_vocab(split_records["train"])
     device = _resolve_device(str(train_cfg.get("device", "auto")))
 
+    task_num_labels = {"emotion": 7}
+    if _uses_view_heads(method):
+        task_num_labels.update({_stage_head_name(stage_name): 7 for stage_name in stage_order})
     model = DialogueMultimodalSTLModel(
         feature_dims=feature_dims,
         num_speakers=len(speaker_to_id),
         config=config,
-        task_num_labels={"emotion": 7},
+        task_num_labels=task_num_labels,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -81,6 +101,8 @@ def run_dialogue_modality_experiment(config_path: str | Path, method: str, run_n
 
     for stage_name in stage_order:
         active_modalities = stages[stage_name]
+        if _uses_freeze_view_heads(method):
+            _freeze_view_heads(model, learned_stages)
         train_examples, missing = filter_dialogues_by_modalities(dialogue_examples["train"], feature_root, active_modalities)
         if missing:
             LOGGER.warning("Dialogue modality stage %s skipped missing train dialogues: %s", stage_name, missing)
@@ -113,10 +135,30 @@ def run_dialogue_modality_experiment(config_path: str | Path, method: str, run_n
             lambda_cmd=float(continual_cfg.get("lambda_cmd", 1.0)),
             lambda_rel=float(continual_cfg.get("lambda_rel", continual_cfg.get("lambda_cmd", 1.0))),
             temperature=float(continual_cfg.get("temperature", 2.0)),
+            eval_interval=int(train_cfg.get("eval_interval", 0)),
+            eval_callback=lambda epoch, stage_name=stage_name: rows.extend(
+                _with_stage_label(
+                    _evaluate_stage(
+                        model,
+                        dialogue_examples[eval_split],
+                        [*learned_stages, stage_name],
+                        stages,
+                        feature_root,
+                        feature_dims,
+                        speaker_to_id,
+                        all_modalities,
+                        train_cfg,
+                        device,
+                        method,
+                        current_stage=stage_name,
+                    ),
+                    f"{stage_name}_ep{epoch}",
+                )
+            ),
         )
         LOGGER.info("Finished dialogue modality stage=%s loss=%.4f", stage_name, loss)
         learned_stages.append(stage_name)
-        if method in {"dlg_mod_seq_kd", "dlg_ours", "dlg_modality_sa_cmd"}:
+        if method in {"dlg_mod_seq_kd", "dlg_ours"} or _uses_sa_cmd(method):
             teacher_by_stage[stage_name] = _clone_frozen(model, device)
         _save_checkpoint(model, output_dir, method, stage_name)
         rows.extend(
@@ -143,6 +185,42 @@ def run_dialogue_modality_experiment(config_path: str | Path, method: str, run_n
     return result_path
 
 
+def apply_train_overrides(config: dict[str, Any], overrides: dict[str, Any]) -> None:
+    train_cfg = config.setdefault("train", {})
+    for key, value in overrides.items():
+        if value is None:
+            continue
+        train_cfg[key] = value
+
+
+def _write_run_parameters(
+    output_dir: Path,
+    config: dict[str, Any],
+    method: str,
+    train_overrides: dict[str, Any],
+) -> None:
+    train_cfg = config.get("train", {})
+    payload = {
+        "method": method,
+        "cli_train_overrides": {
+            key: value for key, value in train_overrides.items() if value is not None
+        },
+        "config": {key: value for key, value in config.items() if not key.startswith("_")},
+        "effective_train": {
+            "epochs": int(train_cfg.get("epochs", 5)),
+            "batch_size": int(train_cfg.get("batch_size", 16)),
+            "lr": float(train_cfg.get("lr", 1e-3)),
+            "weight_decay": float(train_cfg.get("weight_decay", 0.0)),
+            "grad_clip": float(train_cfg.get("grad_clip", 5.0)),
+            "device": str(train_cfg.get("device", "auto")),
+            "view_heads": _uses_view_heads(method),
+            "freeze_old_view_heads": _uses_freeze_view_heads(method),
+        },
+    }
+    path = ensure_dir(output_dir / "logs") / "run_parameters.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def _train_stage(
     model: nn.Module,
     loader: DataLoader,
@@ -160,38 +238,62 @@ def _train_stage(
     lambda_cmd: float,
     lambda_rel: float,
     temperature: float,
+    eval_interval: int = 0,
+    eval_callback=None,
 ) -> float:
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
     total_loss = 0.0
     steps = 0
-    for _ in range(epochs):
+    for epoch_index in range(1, epochs + 1):
+        epoch_total_loss = 0.0
+        epoch_steps = 0
         model.train()
         for batch in loader:
             batch = _move_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
-            output = model(batch, task_name="emotion", active_modalities=active_modalities)
+            output = model(
+                batch,
+                task_name="emotion",
+                active_modalities=active_modalities,
+                head_name=_head_name_for_method(method, stage_name),
+            )
             supervised_terms = [_sequence_ce(criterion, output["logits"], batch["labels"]["emotion"])]
-            if method == "dlg_modality_sa_cmd":
+            if _uses_sa_cmd(method):
                 for old_stage in learned_stages:
-                    supervised_output = model(batch, task_name="emotion", active_modalities=stages[old_stage])
+                    supervised_output = model(
+                        batch,
+                        task_name="emotion",
+                        active_modalities=stages[old_stage],
+                        head_name=_head_name_for_method(method, old_stage),
+                    )
                     supervised_terms.append(_sequence_ce(criterion, supervised_output["logits"], batch["labels"]["emotion"]))
             loss = torch.stack(supervised_terms).mean()
 
             kd_terms = []
             relation_terms = []
-            if method in {"dlg_mod_seq_kd", "dlg_ours", "dlg_modality_sa_cmd"}:
+            if method in {"dlg_mod_seq_kd", "dlg_ours"} or _uses_sa_cmd(method):
                 for old_stage in learned_stages:
                     teacher = teacher_by_stage.get(old_stage)
                     if teacher is None:
                         continue
                     old_modalities = stages[old_stage]
                     with torch.no_grad():
-                        teacher_output = teacher(batch, task_name="emotion", active_modalities=old_modalities)
-                    student_output = model(batch, task_name="emotion", active_modalities=old_modalities)
+                        teacher_output = teacher(
+                            batch,
+                            task_name="emotion",
+                            active_modalities=old_modalities,
+                            head_name=_head_name_for_method(method, old_stage),
+                        )
+                    student_output = model(
+                        batch,
+                        task_name="emotion",
+                        active_modalities=old_modalities,
+                        head_name=_head_name_for_method(method, old_stage),
+                    )
                     valid_mask = batch["labels"]["emotion"] != IGNORE_INDEX
                     weights = (
                         confidence_weights(teacher_output["logits"], valid_mask)
-                        if method == "dlg_modality_sa_cmd"
+                        if _uses_sa_cmd(method)
                         else None
                     )
                     kd_terms.append(
@@ -203,7 +305,7 @@ def _train_stage(
                             weights=weights,
                         )
                     )
-                    if method == "dlg_modality_sa_cmd":
+                    if _uses_sa_cmd(method):
                         relation_terms.append(
                             sample_relation_loss(
                                 student_output["embedding"],
@@ -222,7 +324,12 @@ def _train_stage(
                 teacher_logits = output["logits"].detach()
                 for old_stage in learned_stages:
                     old_modalities = stages[old_stage]
-                    student_logits = model(batch, task_name="emotion", active_modalities=old_modalities)["logits"]
+                    student_logits = model(
+                        batch,
+                        task_name="emotion",
+                        active_modalities=old_modalities,
+                        head_name=_head_name_for_method(method, old_stage),
+                    )["logits"]
                     cmd_terms.append(_sequence_kd(student_logits, teacher_logits, batch["labels"]["emotion"], temperature))
             if cmd_terms:
                 loss = loss + lambda_cmd * torch.stack(cmd_terms).mean()
@@ -231,8 +338,21 @@ def _train_stage(
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
-            total_loss += float(loss.detach().cpu())
+            loss_float = float(loss.detach().cpu())
+            total_loss += loss_float
+            epoch_total_loss += loss_float
+            epoch_steps += 1
             steps += 1
+        LOGGER.info(
+            "Epoch %d/%d stage=%s method=%s total_loss=%.4f",
+            epoch_index,
+            epochs,
+            stage_name,
+            method,
+            epoch_total_loss / max(epoch_steps, 1),
+        )
+        if eval_interval > 0 and eval_callback is not None and epoch_index % eval_interval == 0:
+            eval_callback(epoch_index)
     return total_loss / max(steps, 1)
 
 
@@ -273,7 +393,12 @@ def _evaluate_stage(
         y_pred: list[int] = []
         for batch in loader:
             batch = _move_batch(batch, device)
-            output = model(batch, task_name="emotion", active_modalities=eval_modalities)
+            output = model(
+                batch,
+                task_name="emotion",
+                active_modalities=eval_modalities,
+                head_name=_head_name_for_method(method, eval_stage),
+            )
             labels = batch["labels"]["emotion"]
             mask = labels != IGNORE_INDEX
             y_true.extend(labels[mask].detach().cpu().tolist())
@@ -390,6 +515,43 @@ def _parse_stages(modality_cfg: dict, stage_order: list[str]) -> dict[str, list[
     return {stage: list(configured[stage]) for stage in stage_order}
 
 
+def _uses_sa_cmd(method: str) -> bool:
+    return method in {
+        "dlg_modality_sa_cmd",
+        "dlg_modality_sa_cmd_view_heads",
+        "dlg_modality_sa_cmd_view_heads_freeze",
+    }
+
+
+def _uses_view_heads(method: str) -> bool:
+    return method in {
+        "dlg_modality_sa_cmd_view_heads",
+        "dlg_modality_sa_cmd_view_heads_freeze",
+    }
+
+
+def _uses_freeze_view_heads(method: str) -> bool:
+    return method == "dlg_modality_sa_cmd_view_heads_freeze"
+
+
+def _stage_head_name(stage_name: str) -> str:
+    return f"emotion_{stage_name}"
+
+
+def _head_name_for_method(method: str, stage_name: str) -> str:
+    return _stage_head_name(stage_name) if _uses_view_heads(method) else "emotion"
+
+
+def _freeze_view_heads(model: nn.Module, learned_stages: list[str]) -> None:
+    learned_head_names = {_stage_head_name(stage_name) for stage_name in learned_stages}
+    for head_name, head in model.heads.items():
+        if not head_name.startswith("emotion_"):
+            continue
+        requires_grad = head_name not in learned_head_names
+        for parameter in head.parameters():
+            parameter.requires_grad_(requires_grad)
+
+
 def _append_rows(path: Path, rows: list[dict[str, object]]) -> None:
     ensure_dir(path.parent)
     fieldnames = [
@@ -413,6 +575,12 @@ def _append_rows(path: Path, rows: list[dict[str, object]]) -> None:
         if write_header:
             writer.writeheader()
         writer.writerows(rows)
+
+
+def _with_stage_label(rows: list[dict[str, object]], stage_label: str) -> list[dict[str, object]]:
+    for row in rows:
+        row["stage"] = stage_label
+    return rows
 
 
 def _move_batch(batch: dict, device: torch.device) -> dict:

@@ -1,0 +1,361 @@
+\section{Method}
+\label{sec:method}
+
+In this section, we introduce the proposed framework for continual multimodal emotion recognition in conversations. We first formulate the sequential MELD setting, and then present the proposed Granularity-aware Multimodal Continual Learning framework (GMC-CL). GMC-CL consists of a dialogue-level task-incremental backbone, a confidence-aware relation distillation objective, and an audio-assisted text-only distillation strategy for exploiting acoustic cues during training.
+
+\subsection{Problem Formulation}
+\label{subsec:problem_formulation}
+
+Let $\mathcal{D}=\{(X_i,Y_i)\}_{i=1}^{N}$ denote a set of dialogue examples, where each dialogue $X_i=\{u_{i,1},u_{i,2},\ldots,u_{i,L_i}\}$ contains $L_i$ utterances. Each utterance may be associated with text, audio, and visual signals. In this work, we focus on a task-incremental formulation based on MELD, where a model learns a sequence of affect-related tasks:
+\begin{equation}
+    \mathcal{T} = \{\mathcal{T}_1,\mathcal{T}_2,\mathcal{T}_3\}
+    = \{\text{sentiment}, \text{emotion}, \text{emotion shift}\}.
+\end{equation}
+The first task captures coarse affective polarity, the second task predicts fine-grained emotion categories, and the third task identifies whether an utterance involves an emotion shift with respect to its conversational context. This order naturally reflects an evolution from coarse affective understanding to fine-grained and context-dependent emotion reasoning.
+
+At training stage $t$, the model only has access to the training data of the current task $\mathcal{T}_t$. After learning $\mathcal{T}_t$, it is evaluated on all tasks observed so far, i.e., $\{\mathcal{T}_1,\ldots,\mathcal{T}_t\}$. Following the task-incremental learning protocol, the task identity is known during evaluation. The goal is to learn the current task effectively while preserving the performance on previously learned tasks.
+
+\subsection{Dialogue-level Task-incremental Backbone}
+\label{subsec:dialogue_backbone}
+
+Given a dialogue $X_i$, each utterance is first encoded by a pretrained language model. For the $j$-th utterance, we obtain a textual representation:
+\begin{equation}
+    \mathbf{x}_{i,j} = f_{\theta}(u_{i,j}),
+\end{equation}
+where $f_{\theta}$ is instantiated by BERT-base or XLM-R. To capture conversational context, the utterance representations are further passed into a bidirectional LSTM:
+\begin{equation}
+    \mathbf{h}_{i,1:L_i} = \mathrm{BiLSTM}(\mathbf{x}_{i,1:L_i}),
+\end{equation}
+where $\mathbf{h}_{i,j}$ is the contextualized representation of utterance $u_{i,j}$. Each task has an independent classifier head:
+\begin{equation}
+    \mathbf{z}^{(t)}_{i,j} = g_t(\mathbf{h}_{i,j}),
+\end{equation}
+where $\mathbf{z}^{(t)}_{i,j}$ denotes the logits for task $\mathcal{T}_t$. The supervised loss for the current task is:
+\begin{equation}
+    \mathcal{L}_{\mathrm{CE}} =
+    - \frac{1}{|\Omega_t|}\sum_{(i,j)\in\Omega_t}
+    \log p^{(t)}_{i,j,y_{i,j}^{(t)}},
+\end{equation}
+where $\Omega_t$ denotes the set of valid utterance positions for task $\mathcal{T}_t$, and $p^{(t)}=\mathrm{softmax}(\mathbf{z}^{(t)})$.
+
+\subsection{Confidence-aware Knowledge Distillation}
+\label{subsec:confidence_kd}
+
+A common solution to catastrophic forgetting is Learning without Forgetting (LwF), which preserves old-task outputs by distilling a frozen teacher model. However, standard LwF treats all teacher predictions equally, although the teacher may be uncertain on noisy or ambiguous utterances. This limitation is particularly relevant for conversational emotion recognition, where ambiguous emotions and speaker-dependent context can make some teacher predictions unreliable.
+
+To address this issue, we introduce confidence-aware knowledge distillation. After finishing stage $t-1$, the model is frozen as a teacher $M^{t-1}$. When learning the current task $\mathcal{T}_t$, the student model $M^t$ is encouraged to match the teacher on previous tasks. For an old task $\mathcal{T}_k$ with $k<t$, the teacher confidence of an utterance is defined as:
+\begin{equation}
+    w^{(k)}_{i,j}
+    =
+    \max_c
+    \mathrm{softmax}\left(\frac{\mathbf{z}^{(k),\mathrm{tea}}_{i,j}}{\tau}\right)_c,
+\end{equation}
+where $\tau$ is the temperature. The confidence-weighted distillation loss is:
+\begin{equation}
+    \mathcal{L}_{\mathrm{CKD}}
+    =
+    \frac{1}{|\Omega_k|}
+    \sum_{(i,j)\in\Omega_k}
+    w^{(k)}_{i,j}
+    \tau^2
+    D_{\mathrm{KL}}
+    \left(
+    \mathrm{softmax}\left(\frac{\mathbf{z}^{(k),\mathrm{tea}}_{i,j}}{\tau}\right)
+    \|
+    \mathrm{softmax}\left(\frac{\mathbf{z}^{(k),\mathrm{stu}}_{i,j}}{\tau}\right)
+    \right).
+\end{equation}
+This design emphasizes reliable teacher knowledge and reduces the influence of uncertain teacher predictions.
+
+\subsection{Sample Relation Distillation}
+\label{subsec:relation_distillation}
+
+Logit distillation preserves output distributions, but it does not explicitly constrain the structure of the representation space. For dialogue-level emotion recognition, the relative geometry among utterance representations is important because emotion categories and emotion shifts are highly dependent on contextual and speaker-related patterns. We therefore introduce a sample relation distillation loss to preserve the teacher's representation structure.
+
+Let $\mathbf{H}^{\mathrm{tea}}=[\mathbf{h}^{\mathrm{tea}}_1,\ldots,\mathbf{h}^{\mathrm{tea}}_m]$ and $\mathbf{H}^{\mathrm{stu}}=[\mathbf{h}^{\mathrm{stu}}_1,\ldots,\mathbf{h}^{\mathrm{stu}}_m]$ be the teacher and student representations of valid utterances in a mini-batch. We compute pairwise similarity matrices:
+\begin{equation}
+    \mathbf{R}^{\mathrm{tea}}_{a,b}
+    =
+    \frac{
+    \langle \mathbf{h}^{\mathrm{tea}}_a, \mathbf{h}^{\mathrm{tea}}_b \rangle
+    }{
+    \|\mathbf{h}^{\mathrm{tea}}_a\|_2 \|\mathbf{h}^{\mathrm{tea}}_b\|_2
+    },
+    \quad
+    \mathbf{R}^{\mathrm{stu}}_{a,b}
+    =
+    \frac{
+    \langle \mathbf{h}^{\mathrm{stu}}_a, \mathbf{h}^{\mathrm{stu}}_b \rangle
+    }{
+    \|\mathbf{h}^{\mathrm{stu}}_a\|_2 \|\mathbf{h}^{\mathrm{stu}}_b\|_2
+    }.
+\end{equation}
+The relation distillation loss is defined as:
+\begin{equation}
+    \mathcal{L}_{\mathrm{REL}}
+    =
+    \frac{1}{m^2}
+    \left\|
+    \mathbf{R}^{\mathrm{stu}} - \mathbf{R}^{\mathrm{tea}}
+    \right\|_F^2.
+\end{equation}
+In practice, the relation loss can also be weighted by teacher confidence, so that reliable samples contribute more strongly to representation preservation.
+
+\subsection{Overall Objective}
+\label{subsec:overall_objective}
+
+The overall training objective of GMC-CL for text-only task-incremental learning is:
+\begin{equation}
+    \mathcal{L}
+    =
+    \mathcal{L}_{\mathrm{CE}}
+    +
+    \lambda_{\mathrm{kd}}
+    \sum_{k<t}
+    \mathcal{L}^{(k)}_{\mathrm{CKD}}
+    +
+    \lambda_{\mathrm{rel}}
+    \sum_{k<t}
+    \mathcal{L}^{(k)}_{\mathrm{REL}},
+\end{equation}
+where $\lambda_{\mathrm{kd}}$ and $\lambda_{\mathrm{rel}}$ control the strength of confidence-aware distillation and relation preservation. This objective extends LwF by introducing confidence weighting and representation-structure preservation.
+
+\subsection{Optional Memory Replay}
+\label{subsec:replay}
+
+We also investigate memory-based variants of GMC-CL. After each task, a small set of dialogue examples is stored as replay memory. During later stages, replay batches from old tasks are mixed with current-task batches. In addition to the hard supervised loss on replay samples, teacher-student distillation can also be applied to replay batches. We consider random replay, prototype-based selection, diverse selection, hybrid selection, DER, DER++, and iCaRL-style nearest-mean classification.
+
+Although replay is a common strategy in continual learning, our empirical results show that replay does not consistently improve over the no-replay variant in the current MELD Task-IL setting. Therefore, replay is treated as an optional component rather than the central contribution of this work.
+
+\subsection{Audio-assisted Text-only Distillation}
+\label{subsec:audio_distillation}
+
+Direct text-audio fusion can be unstable on MELD because acoustic signals may be noisy and difficult to align. Instead of requiring audio at inference time, we explore an audio-assisted text-only distillation strategy. A text-audio teacher is first trained using both textual and acoustic inputs, while a text-only student learns from the teacher and is used for evaluation.
+
+For the teacher, the textual feature is obtained from BERT, and the acoustic feature is extracted by a pretrained wav2vec2 encoder:
+\begin{equation}
+    \mathbf{a}_{i,j} = q_{\phi}(a_{i,j}),
+\end{equation}
+where $a_{i,j}$ is the waveform of utterance $u_{i,j}$ and $q_{\phi}$ denotes wav2vec2. The text and audio representations are fused with speaker embeddings:
+\begin{equation}
+    \mathbf{r}^{\mathrm{tea}}_{i,j}
+    =
+    \mathrm{MLP}
+    \left(
+    [\mathbf{x}_{i,j}; \mathbf{a}_{i,j}; \mathbf{s}_{i,j}]
+    \right),
+\end{equation}
+where $\mathbf{s}_{i,j}$ is the speaker embedding. The fused sequence is then encoded by a dialogue-level BiLSTM and task-specific heads.
+
+The student receives only text at both training and inference. It is optimized by:
+\begin{equation}
+    \mathcal{L}_{\mathrm{S6}}
+    =
+    \mathcal{L}_{\mathrm{CE}}^{\mathrm{stu}}
+    +
+    \lambda_{\mathrm{ta}}
+    \mathcal{L}_{\mathrm{KD}}
+    \left(
+    \mathbf{z}^{\mathrm{stu}},
+    \mathbf{z}^{\mathrm{tea}}
+    \right)
+    +
+    \lambda_{\mathrm{tar}}
+    \mathcal{L}_{\mathrm{REL}}
+    \left(
+    \mathbf{H}^{\mathrm{stu}},
+    \mathbf{H}^{\mathrm{tea}}
+    \right).
+\end{equation}
+This design allows the student to absorb acoustic emotional cues during training while maintaining text-only inference. We regard this module as an audio-assisted extension of GMC-CL. It is related to cross-modal representation distillation, but it does not yet include an explicit contrastive objective.
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Dataset and Sequential Protocol}
+\label{subsec:dataset_protocol}
+
+We conduct experiments on MELD, a multimodal multi-party conversational emotion recognition dataset. Each utterance is annotated with emotion labels and sentiment labels, and each dialogue contains textual, acoustic, and visual information. In this work, we construct a dialogue-level task-incremental benchmark, denoted as MELD-SeqCL, from MELD. The task sequence is:
+\begin{equation}
+    \text{sentiment} \rightarrow \text{emotion} \rightarrow \text{emotion shift}.
+\end{equation}
+
+We use fixed dialogue-level splits for all methods to ensure a fair comparison. Each training task contains 346 dialogues. The development set contains 39, 38, and 37 dialogues for sentiment, emotion, and shift, respectively. The test set contains 94, 93, and 93 dialogues for the three tasks. At each stage, the model is trained only on the current task and evaluated on all tasks learned so far.
+
+\subsection{Evaluation Metrics}
+\label{subsec:metrics}
+
+The main metric is final average weighted-F1 over all tasks after the last stage:
+\begin{equation}
+    \mathrm{FinalAvgF1}
+    =
+    \frac{1}{|\mathcal{T}|}
+    \sum_{t=1}^{|\mathcal{T}|}
+    \mathrm{W\mbox{-}F1}_{t}^{\mathrm{final}}.
+\end{equation}
+We also report final average accuracy. To measure forgetting, we compute the performance drop from the best historical performance of each task to its final performance:
+\begin{equation}
+    F_t =
+    \max_{s\in\{t,\ldots,|\mathcal{T}|\}}
+    \mathrm{W\mbox{-}F1}_{t}^{(s)}
+    -
+    \mathrm{W\mbox{-}F1}_{t}^{\mathrm{final}}.
+\end{equation}
+The average forgetting is obtained by averaging $F_t$ over all tasks. Retention is computed as the ratio between final and best historical performance.
+
+\subsection{Implementation Details}
+\label{subsec:implementation_details}
+
+For the main text-only experiments, we use BERT-base-uncased as the textual backbone and a bidirectional LSTM as the dialogue encoder. We also report results with XLM-R-large for comparison. Unless otherwise stated, all experiments use 30 epochs, AdamW optimizer, learning rate $2\times10^{-5}$, weight decay 0.01, maximum sequence length 128, and mixed precision training. For BERT-base, the batch size is 2 with gradient accumulation steps of 4. For XLM-R-large, the batch size is 1 with gradient accumulation steps of 8. The default random seed is 13.
+
+For audio-assisted distillation, we use BERT-base as the text encoder and wav2vec2-base as the audio encoder. The maximum audio length is set to 4 seconds. The text-audio teacher is trained for 10 epochs for each task, and the text-only student is trained for 30 epochs.
+
+All experiments are implemented in PyTorch. The experiments are conducted on NVIDIA RTX 3090 GPUs.
+
+\subsection{Compared Methods}
+\label{subsec:baselines}
+
+We compare GMC-CL with representative continual learning baselines:
+\begin{itemize}
+    \item \textbf{Sequential fine-tuning (Seq-FT)} trains tasks sequentially without any forgetting prevention.
+    \item \textbf{LwF} preserves old-task logits through knowledge distillation.
+    \item \textbf{Experience Replay (ER)} stores old samples and mixes them with current-task data.
+    \item \textbf{iCaRL} maintains exemplars and performs nearest-mean classification.
+    \item \textbf{DER and DER++} store old logits and regularize replay predictions.
+    \item \textbf{EWC, MAS, and SI} constrain parameter updates based on estimated parameter importance.
+    \item \textbf{PackNet} uses pruning and parameter masks to reduce interference across tasks.
+\end{itemize}
+We also evaluate several variants of the proposed method, including GMC-CL without replay, GMC-CL with replay, GMC-CL with frozen old heads, and KLMap-based replay selection.
+
+\subsection{Main Results on BERT-base}
+\label{subsec:main_results}
+
+Table~\ref{tab:bert_main_results} reports the main results on the BERT-base backbone. LwF obtains the highest final average weighted-F1 under the current seed. The proposed GMC-CL without replay achieves competitive performance and outperforms replay-based baselines such as ER, iCaRL, DER, DER++, and PackNet, as well as regularization-based methods including EWC, MAS, and SI.
+
+\begin{table}[t]
+\centering
+\caption{Main results on MELD-SeqCL with BERT-base. The main metric is final average weighted-F1. Results marked with $\dagger$ require further verification.}
+\label{tab:bert_main_results}
+\begin{tabular}{lccc}
+\hline
+Method & Type & Final Avg W-F1 & Final Avg Acc \\
+\hline
+Seq-FT & Lower bound & 0.5174 & 0.5096 \\
+ER & Replay & 0.5912 & 0.5913 \\
+iCaRL-NME & Replay & 0.6079 & 0.6050 \\
+DER & Replay & 0.5943 & 0.5964 \\
+DER++ & Replay & 0.5969 & 0.5990 \\
+PackNet & Architecture & 0.5622 & 0.5589 \\
+EWC & Regularization & 0.5168 & 0.5183 \\
+MAS & Regularization & 0.5534 & 0.5485 \\
+SI & Regularization & 0.3943 & 0.4433 \\
+LwF & Distillation & \textbf{0.6232} & \textbf{0.6320} \\
+GMC-CL w/o replay & Ours & 0.6190 & 0.6274 \\
+GMC-CL w/o replay + freeze & Ours & 0.6191 & 0.6275 \\
+GMC-CL + replay & Ours & 0.6158 & 0.6250 \\
+GMC-CL + replay + freeze & Ours & 0.6134 & 0.6225 \\
+GMC-CL + KLMap$^\dagger$ & Ours & 0.6164 & 0.6263 \\
+\hline
+\end{tabular}
+\end{table}
+
+The results show three observations. First, distillation-based methods are more effective than parameter regularization and replay-only methods in this setting. Second, GMC-CL achieves performance close to LwF and clearly outperforms ER, DER, DER++, PackNet, EWC, MAS, and SI. Third, adding replay to GMC-CL does not consistently improve performance, suggesting that the current gain mainly comes from confidence-aware relation distillation rather than memory replay.
+
+\subsection{Results with XLM-R-large}
+\label{subsec:xlmr_results}
+
+Table~\ref{tab:xlmr_results} reports the results with XLM-R-large. Unlike the BERT setting, iCaRL-NME achieves the best score among the completed XLM-R experiments. GMC-CL with random replay remains competitive, but XLM-R-large is substantially more expensive and less stable for our small dialogue-level split. Therefore, BERT-base is used as the main backbone for subsequent analysis.
+
+\begin{table}[t]
+\centering
+\caption{Results on MELD-SeqCL with XLM-R-large. Some early runs do not record final average accuracy.}
+\label{tab:xlmr_results}
+\begin{tabular}{lcc}
+\hline
+Method & Final Avg W-F1 & Final Avg Acc \\
+\hline
+Seq-FT & 0.4716 & 0.4805 \\
+ER & 0.5943 & -- \\
+LwF & 0.6002 & -- \\
+iCaRL-NME & \textbf{0.6147} & \textbf{0.6209} \\
+GMC-CL + replay & 0.6084 & -- \\
+GMC-CL + replay + freeze & 0.6042 & -- \\
+GMC-CL + KLMap$^\dagger$ & 0.6076 & 0.6177 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Text-Audio Experiments}
+\label{subsec:text_audio_results}
+
+We further investigate whether audio can improve the continual learning of conversational emotion representations. We first evaluate direct text-audio fusion in an end-to-end setting. As shown in Table~\ref{tab:s5_e2e}, direct end-to-end fusion performs poorly. This indicates that raw acoustic inputs are difficult to exploit directly in the current setting, and the failure is not mainly caused by forgetting because the early tasks themselves are not learned well.
+
+\begin{table}[t]
+\centering
+\caption{End-to-end text-audio results. Direct text-audio fusion performs poorly under the current setting.}
+\label{tab:s5_e2e}
+\begin{tabular}{lcc}
+\hline
+Method & Final Avg W-F1 & Final Avg Acc \\
+\hline
+Text-audio Seq-FT & 0.3369 & 0.4901 \\
+Text-audio KD & \textbf{0.3408} & \textbf{0.4915} \\
+Text-audio SA-CMD & 0.3272 & 0.4910 \\
+\hline
+\end{tabular}
+\end{table}
+
+To avoid direct dependence on noisy acoustic inputs at inference time, we then evaluate audio-assisted text-only distillation. The experiments with wav2vec2-based text-audio teachers are currently running. We will report the results of the plain teacher-student variant and the confidence-aware relation distillation variant in the final version.
+
+\begin{table}[t]
+\centering
+\caption{Audio-assisted text-only distillation results. The wav2vec2-based S6 experiments are currently running and will be filled in after completion.}
+\label{tab:s6_results}
+\begin{tabular}{lcc}
+\hline
+Method & Final Avg W-F1 & Final Avg Acc \\
+\hline
+Text-only LwF & 0.6232 & 0.6320 \\
+Text-only GMC-CL & 0.6190 & 0.6274 \\
+Text-audio teacher $\rightarrow$ text student & -- & -- \\
+Text-audio teacher $\rightarrow$ text student + SA & -- & -- \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Ablation Study}
+\label{subsec:ablation}
+
+Table~\ref{tab:current_ablation} summarizes the currently available variants of GMC-CL. Freezing old heads brings almost no improvement, and replay slightly decreases the performance under the current setting. This suggests that the confidence-aware relation distillation component itself is the main source of performance.
+
+\begin{table}[t]
+\centering
+\caption{Current variants of GMC-CL on BERT-base. These experiments mainly evaluate replay and head freezing. A more detailed component-level ablation will be added in the final version.}
+\label{tab:current_ablation}
+\begin{tabular}{lcc}
+\hline
+Variant & Final Avg W-F1 & Final Avg Acc \\
+\hline
+GMC-CL & 0.6190 & 0.6274 \\
+GMC-CL + freeze old heads & \textbf{0.6191} & \textbf{0.6275} \\
+GMC-CL + replay & 0.6158 & 0.6250 \\
+GMC-CL + replay + freeze old heads & 0.6134 & 0.6225 \\
+\hline
+\end{tabular}
+\end{table}
+
+However, the current ablation is not sufficient to fully isolate the contributions of confidence weighting and relation distillation. In the final version, we will add component-level ablations:
+\begin{itemize}
+    \item KD only, corresponding to LwF;
+    \item KD with confidence weighting;
+    \item KD with relation distillation;
+    \item KD with both confidence weighting and relation distillation.
+\end{itemize}
+This ablation will directly verify the effect of each component in GMC-CL.
+
+\subsection{Discussion}
+\label{subsec:discussion}
+
+The experimental results provide several insights. First, simple sequential fine-tuning suffers from weak final performance, confirming the need for continual learning mechanisms. Second, LwF is a strong baseline for MELD-SeqCL, indicating that output distillation is particularly effective for dialogue-level task-incremental emotion recognition. Third, GMC-CL is competitive with LwF and outperforms several replay and regularization baselines, suggesting that confidence-aware relation preservation is a promising alternative to memory-heavy replay. Fourth, direct end-to-end text-audio fusion is unstable, motivating our audio-assisted text-only distillation design.
+
+There are also limitations. The current joint-training upper bound is lower than expected and should be re-examined. The KLMap replay results require rerunning with recorded replay selection digests. Moreover, the audio-assisted distillation module does not yet include a contrastive representation objective. In future work, we will incorporate cross-modal contrastive distillation and extend the experiments to additional seeds and stronger audio backbones such as HuBERT.
